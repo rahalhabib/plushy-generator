@@ -1,7 +1,7 @@
 // app/api/plushy/route.js
 export const runtime = "edge";
 
-/** Simple helper for consistent JSON + CORS */
+/** JSON + CORS helper */
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -9,76 +9,63 @@ function json(data, status = 200) {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-headers": "content-type",
-    },
-  });
-}
-
-/** Handle preflight CORS requests */
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type",
       "access-control-allow-methods": "POST,OPTIONS",
     },
   });
 }
 
-/** Main POST endpoint */
+export async function OPTIONS() {
+  return json({}, 204);
+}
+
 export async function POST(req) {
   try {
     const form = await req.formData();
-    const file = form.get("file"); // user-uploaded logo
+    const file = form.get("file"); // user-uploaded logo (File)
     const bg = form.get("bg") || "#EAF2FF";
     const size = "1024x1024";
 
     if (!file) return new Response("No file uploaded", { status: 400 });
 
-    // 1️⃣ Fetch your hosted style reference
-    const styleURL = "https://plushy-generator.vercel.app/material_reference_2.jpeg";
-    const styleBlob = await fetch(styleURL).then((r) => {
-      if (!r.ok) throw new Error("Could not fetch style reference");
-      return r.blob();
-    });
+    // Build absolute URL to your style reference hosted in /public
+    const { origin } = new URL(req.url);
+    const styleURL = `${origin}/material_reference_2.jpeg`;
 
-    // 2️⃣ Build prompt
+    // Fetch style reference as Blob
+    const styleRes = await fetch(styleURL);
+    if (!styleRes.ok) return new Response("Style reference not found", { status: 500 });
+    const styleBlob = await styleRes.blob();
+
     const prompt = `
-Combine the style of the first image (a soft plush, ribbed-knit coral material)
-with the uploaded logo. 
-Create a plush speech-bubble pillow with a small tail, made of bright coral ribbed fabric.
+Combine the visual style of the first image (soft plush, ribbed-knit coral material)
+with the uploaded logo.
+Output a plush speech-bubble pillow (rounded square with a small tail), bright coral knit.
 Place the logo as a white chenille patch centered on the front.
-Make it appear as a soft, floating object with no ground shadow.
-Use a gentle ${bg} background. 
-Photorealistic textile detail, soft studio lighting, subtle depth-of-field, 1024x1024.
-Do not add extra text, watermarks, or background clutter.`;
+Floating object (no ground shadow). Gentle ${bg} background.
+Photoreal textile detail, soft studio lighting, subtle depth-of-field. ${size}.
+No extra text or watermarks.`;
 
-    // 3️⃣ Prepare request to OpenAI Images API
+    // IMPORTANT: Use array syntax "image[]" for multiple images
     const body = new FormData();
     body.append("model", "gpt-image-1");
-
-    // always include style first
-    body.append("image", styleBlob, "style.jpeg");
-    // then the user logo
-    body.append("image", file, "logo.png");
-
+    body.append("image[]", styleBlob, "style.jpeg"); // style reference first
+    body.append("image[]", file, "logo.png");        // then the user logo
     body.append("prompt", prompt);
     body.append("size", size);
 
-    // 4️⃣ Call OpenAI API
-    const response = await fetch("https://api.openai.com/v1/images/edits", {
+    const r = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       body,
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      return new Response(text || "OpenAI error", { status: response.status });
+    if (!r.ok) {
+      const text = await r.text();
+      return new Response(text || "OpenAI error", { status: r.status });
     }
 
-    const jsonResponse = await response.json();
-    const b64 = jsonResponse?.data?.[0]?.b64_json;
+    const data = await r.json();
+    const b64 = data?.data?.[0]?.b64_json;
     if (!b64) return new Response("No image returned", { status: 502 });
 
     return json({ image: `data:image/png;base64,${b64}` });
